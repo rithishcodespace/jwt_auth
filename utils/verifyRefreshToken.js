@@ -3,27 +3,20 @@ const createError = require("http-errors");
 const jwt = require("jsonwebtoken");
 const client = require("./redis");
 
-// You're returning values from async callbacks, but that doesn’t return from the parent function.
+const verifyRefreshToken = async (refreshToken) => {
+  try {
+    const payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    const userId = String(payload.id);
+    const storedToken = await client.get(userId); // await promise
 
-// Instead, you should use a callback pattern, passing a function like callback(error, result).
-
-const verifyRefreshToken = (refreshToken, callback) => {
-  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, payload) => {
-    if (err) return callback(createError.Unauthorized());
-
-    const userId = payload.id;
-    client.get(userId, (err, result) => {
-      if (err) return callback(createError.InternalServerError());
-
-      if (refreshToken === result) {
-        return callback(null, userId);
-      } else {
-        return callback(createError.Unauthorized());
-      }
-    });
-  });
+    if (refreshToken === storedToken) {
+      return userId;
+    } else {
+      throw createError.Unauthorized("Token mismatch");
+    }
+  } catch (err) {
+    throw createError.Unauthorized(err.message);
+  }
 };
 
 module.exports = verifyRefreshToken;
-
-
