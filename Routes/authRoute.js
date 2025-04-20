@@ -15,19 +15,36 @@ router.post("/auth/register",(req,res,next)=>{
         if(!emailId || !password) throw createError.BadRequest(); // it throws the badrequest error and catched by catch block
         validate(emailId,password);
         let sql = "select * from users where emailId = ?";
-        const values = [emailId,password];
+        const values = [emailId];
         db.query(sql,values,async(error,result)=>{
             if(error) next(error);
             else if(result.length > 0) next(createError.Conflict(`${emailId} already exists!`));
             else{
                 password = await bcrypt.hash(password,10);
                 let insertsql = "INSERT INTO users (emailId, password) VALUES (?, ?);";
-                db.query(insertsql,[emailId,password],(error,result)=>{
+                db.query(insertsql,[emailId,password],async(error,result)=>{
                     if(error)next(error);
                     //generating jwt tokens
                     const accessToken = jwt.sign({id: result.insertId},process.env.ACCESS_TOKEN_SECRET,{expiresIn:"15m"});
                     const refreshToken = jwt.sign({id: result.insertId},process.env.REFRESH_TOKEN_SECRET,{expiresIn:"7d"});
-                    res.status(200).json({message:"user registered successfull!","accessToken":accessToken,"refreshToken":refreshToken})
+
+                    // storing in redis cache system key -> userId, value -> newRefreshToken
+                    try {
+                        await client.set(result.insertId.toString(), refreshToken, {
+                            EX: 604800 // 7 days
+                        });
+                    
+                        res.status(200).json({
+                            message: "user registered successfully!",
+                            accessToken: accessToken,
+                            refreshToken: refreshToken
+                        });
+                    } catch (redisError) {
+                        console.log(redisError.message);
+                        next(createError.InternalServerError());
+                    }
+                    
+                   
                 })
                 
             }
@@ -52,38 +69,65 @@ router.post("/auth/login",(req,res,next)=>{
             // generating access token
             const accessToken = jwt.sign({id:result[0].id},process.env.ACCESS_TOKEN_SECRET,{expiresIn:"15m"})
             const refreshToken = jwt.sign({id:result[0].id},process.env.REFRESH_TOKEN_SECRET,{expiresIn:"7d"});
-            res.status(200).json({message:"user logged in successfull!","accessToken":accessToken,"refreshToken":refreshToken})
-        })
-    }
-    catch(error){
-        next(error);
-    }
-})
-router.post("/auth/refresh-token",(req,res)=>{
-    const{refreshToken} = req.body;
-    try{
-        if(!refreshToken)return next(createError.BadRequest());
-        const userId = verifyRefreshToken(refreshToken); //returns the userId
 
-        // creates new pair of access and refresh token
-        const newAccessToken = jwt.sign({id:userId},process.env.ACCESS_TOKEN_SECRET,{expiresIn:"15m"});
-        const newRefreshToken = jwt.sign({id:userId},process.env.ACCESS_REFRESH_SECRET,{expiresIn:"7d"});
-
-        // storing in redis cache system key -> userId, value -> newRefreshToken
-        client.SET(userId, newRefreshToken, (error,reply) => {
-            if(error)
-            {
-                console.log(error.message);
+            // storing in redis cache system key -> userId, value -> newRefreshToken
+            try {
+                await client.set(result[0].id.toString(), refreshToken, {
+                    EX: 604800 // 7 days
+                });
+            
+                res.status(200).json({
+                    message: "user registered successfully!",
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                });
+            } catch (redisError) {
+                console.log(redisError.message);
                 next(createError.InternalServerError());
-                return;
-            }
+            }            
         })
-        res.status(200).json({message:"user logged in successfull!","newAccessToken":newAccessToken,"newRefreshToken":newRefreshToken})
     }
     catch(error){
         next(error);
     }
 })
+router.post("/auth/refresh-token", (req, res, next) => {
+    const { refreshToken } = req.body;
+    try {
+        if (!refreshToken) return next(createError.BadRequest());
+
+        // Passing the callback to handle the result of token verification
+        verifyRefreshToken(refreshToken, async(error, userId) => { // this callback will return the userId if the refreshToken matches the refreshToken in redis
+            if (error) {
+                return next(error); // i have written the complete logic inside this callback function because if wrote the logic out of this callback before userId is returned the newTokens will be generated which will create problems 
+            }
+
+            // Now that we have the userId, we can generate new tokens
+            const newAccessToken = jwt.sign({ id: userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "15m" });
+            const newRefreshToken = jwt.sign({ id: userId }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: "7d" });
+
+            try {
+                // Store the new refresh token in Redis
+                await client.set(userId.toString(), newRefreshToken, {
+                    EX: 604800 // 7 days
+                }); 
+
+                // Send the new tokens as response
+                res.status(200).json({
+                    message: "Refresh token successfully refreshed!",
+                    newAccessToken: newAccessToken,
+                    newRefreshToken: newRefreshToken
+                });
+            }
+            catch (redisError) {
+                console.log(redisError.message);
+                return next(createError.InternalServerError());
+            }});
+            } catch (error) {
+                next(error);
+            }
+        });
+
 router.delete("/auth/logout",(req,res)=>{
     res.send("logout");
 })
