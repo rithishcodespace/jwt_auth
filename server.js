@@ -1,17 +1,20 @@
 require("dotenv");
+const client = require("./utils/redis");
 const express = require("express");
 const app = express();
 const cors = require("cors");
 const morgan = require("morgan"); //log the request
 const createError = require("http-errors"); //shows the https errors
-const { error } = require("console");
 const authRoute = require("./Routes/authRoute")
 const PORT = process.env.PORT || 5000;
+const verifyAccessToken = require("./utils/verifyAccessToken");
 
 app.use(express.json());
 app.use(cors());
 app.use(morgan('dev')) //developement build
 app.use(authRoute);
+
+app.use("/",verifyAccessToken,(req,res)=>res.send("hello from express!"));
 
 app.use((req,res,next)=>{ // This middleware catches any routes that are not matched by any previous routes and creates a "Not Found" error (404).
     next(createError.NotFound())
